@@ -1,0 +1,12 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import {createHash} from 'node:crypto';
+import {enrichRosterStatus} from './roster-evidence.mjs';
+function encode(text){let bits=0,value=0,out='';const alphabet='abcdefghijklmnopqrstuvwxyz234567';for(const byte of Buffer.from(text)){value=value*256+byte;bits+=8;while(bits>=5){bits-=5;out+=alphabet[Math.floor(value/2**bits)%32];value%=2**bits;}}if(bits)out+=alphabet[(value*2**(5-bits))%32];return out;}
+function fixture(){const directory=mkdtempSync(join(tmpdir(),'wingman-roster-')),settingsFile=join(directory,'settings.json'),scope=createHash('sha256').update('provider|test-user').digest('hex'),file=join(directory,encode('sand.client.slice.account.provider|test-user.roster.last-roster')+'.blob');writeFileSync(settingsFile,JSON.stringify({activeAccountScope:scope}));const rows=[{id:'visible'},{id:'hidden',isHiddenFromSidebar:true},{id:'removed-from-sidebar',isRemovedFromSidebar:true}];writeFileSync(file,JSON.stringify({schemaVersion:4,value:{rows}}));return {directory,settingsFile,scope,file,clean:()=>rmSync(directory,{recursive:true,force:true})};}
+test('full-account evidence retains hidden and sidebar-removed bot IDs',()=>{const f=fixture();try{const s=enrichRosterStatus({ok:true,complete:true,agents:[{id:'visible'}]},f);assert.equal(s.accountScope,f.scope);assert.deepEqual(s.rosterEvidence.knownBotIds,['visible','hidden','removed-from-sidebar']);}finally{f.clean();}});
+test('stale or incomplete live roster is not deletion evidence',()=>{const f=fixture();try{for(const s of [{ok:true,complete:false,agents:[]},{ok:true,complete:true,agents:[]},{ok:false,complete:true,agents:[{id:'visible'}]}])assert.equal(enrichRosterStatus(s,f).rosterEvidence,undefined);}finally{f.clean();}});
+test('another account and unknown persisted schema are ignored',()=>{const f=fixture();try{writeFileSync(f.settingsFile,JSON.stringify({activeAccountScope:'f'.repeat(64)}));assert.equal(enrichRosterStatus({ok:true,complete:true,agents:[{id:'visible'}]},f).rosterEvidence,undefined);writeFileSync(f.settingsFile,JSON.stringify({activeAccountScope:f.scope}));writeFileSync(f.file,JSON.stringify({schemaVersion:99,value:{rows:[{id:'visible'}]}}));assert.equal(enrichRosterStatus({ok:true,complete:true,agents:[{id:'visible'}]},f).rosterEvidence,undefined);}finally{f.clean();}});

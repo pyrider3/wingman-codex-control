@@ -11,3 +11,18 @@ tokens/
 *.token
 .wingman/
 .session-bridge/
+
+# Local application state and private task data
+*.sqlite
+*.sqlite-*
+*.db
+*-receipt.json
+*-private.json
+wingman-selection.json
+config.json
+state/
+work/
+outputs/
+*.sock
+
+/node_modules

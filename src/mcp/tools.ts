@@ -22,6 +22,7 @@ export const SendMessageSchema = z.object({
   provider: ProviderSchema,
   session_id: z.string().min(1),
   text: z.string().min(1),
+  origin_bot_id: z.string().uuid().optional(),
 });
 
 export const InterruptSchema = z.object({
@@ -62,6 +63,7 @@ export const SteerSchema = z.object({
   provider: ProviderSchema,
   session_id: z.string().min(1),
   text: z.string().min(1),
+  origin_bot_id: z.string().uuid().optional(),
 });
 
 export const ListApprovalsSchema = z.object({
@@ -171,7 +173,7 @@ export function createToolHandlers(providers: ProviderRegistry) {
       try {
         const result = await providers
           .get(args.provider)
-          .sendMessage(args.session_id, args.text);
+          .sendMessage(args.session_id, args.text, { originBotId: args.origin_bot_id });
         return textResult(result);
       } catch (err) {
         return errorResult(err);
@@ -260,7 +262,7 @@ export function createToolHandlers(providers: ProviderRegistry) {
         if (!provider.steer) {
           return errorResult(`steer not supported for ${args.provider}`);
         }
-        const result = await provider.steer(args.session_id, args.text);
+        const result = await provider.steer(args.session_id, args.text, { originBotId: args.origin_bot_id });
         return textResult(result);
       } catch (err) {
         return errorResult(err);

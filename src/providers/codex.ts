@@ -212,21 +212,12 @@ export class CodexProvider implements SessionProvider {
     }
 
     await this.ensureConnected();
-    // Prefer resume so history is available; fall back to thread/read with includeTurns.
-    let thread: Record<string, unknown>;
-    try {
-      const resumed = (await this.request('thread/resume', { threadId: sessionId })) as {
-        thread?: Record<string, unknown>;
-      };
-      thread = resumed.thread ?? {};
-    } catch {
-      const read = (await this.request('thread/read', {
-        threadId: sessionId,
-        includeTurns: true,
-      })) as { thread?: Record<string, unknown> };
-      thread = read.thread ?? {};
-    }
-
+    // Read persisted history without loading a second live copy of a desktop thread.
+    const read = (await this.request('thread/read', {
+      threadId: sessionId,
+      includeTurns: true,
+    })) as { thread?: Record<string, unknown> };
+    const thread = read.thread ?? {};
     const items = extractTranscriptItems(thread).slice(-Math.max(1, limit));
     return { sessionId, provider: 'codex', items };
   }

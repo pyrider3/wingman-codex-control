@@ -1,7 +1,7 @@
 {
-  "name": "wingman-mcp",
-  "version": "0.2.0",
-  "description": "Your coding agent's wingman — TypeScript MCP bridge + pair CLI so Grok Bot (and other MCP hosts) can talk to live Codex and Claude Code sessions on your machine",
+  "name": "wingman-codex-control",
+  "version": "0.3.0",
+  "description": "Multi-account Codex desktop control for Grok Bot, with durable origin-bot completion reports",
   "type": "module",
   "main": "dist/mcp/server.js",
   "bin": {
@@ -25,7 +25,8 @@
     "tunnel": "tsx src/tunnel.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "test:desktop": "node --test completion.test.mjs roster-evidence.test.mjs multi-account-routing.test.mjs"
   },
   "keywords": [
     "mcp",
@@ -40,7 +41,7 @@
   ],
   "license": "MIT",
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.280",
@@ -59,11 +60,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/juangurdian/wingman.git"
+    "url": "https://github.com/pyrider3/wingman-codex-control.git"
   },
   "bugs": {
-    "url": "https://github.com/juangurdian/wingman/issues"
+    "url": "https://github.com/pyrider3/wingman-codex-control/issues"
   },
-  "homepage": "https://github.com/juangurdian/wingman#readme",
-  "author": "Juan Gurdian and contributors"
+  "homepage": "https://github.com/pyrider3/wingman-codex-control#readme",
+  "author": "Juan Gurdian and contributors",
+  "private": true
 }

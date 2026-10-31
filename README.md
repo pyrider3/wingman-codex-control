@@ -1,462 +1,139 @@
-# Wingman
+# Wingman Codex Control
 
-**Your coding agent's wingman** — a TypeScript MCP bridge + pair CLI so Grok Bot, Cursor, Muse Code (and other MCP hosts) can talk to live Codex and Claude Code sessions on your machine while you still see the session.
+让 Grok Bot 管理同一台 Linux 电脑上、不同账号的 **现有 Codex 桌面会话**，并在任务结束后把结果回报给发起任务的 Bot。
 
-Dual-provider: Codex (app-server) + Claude Code (Agent SDK).
+这是基于 [juangurdian/wingman](https://github.com/juangurdian/wingman) 的扩展，保留上游 Git 历史与 MIT 许可证。原版说明见 [docs/UPSTREAM_README.md](docs/UPSTREAM_README.md)。
 
-[![CI](https://github.com/juangurdian/wingman/actions/workflows/ci.yml/badge.svg)](https://github.com/juangurdian/wingman/actions/workflows/ci.yml)
-[![npm version](https://img.shields.io/npm/v/wingman-mcp.svg)](https://www.npmjs.com/package/wingman-mcp)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](tsconfig.json)
-[![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+## 功能
 
-See **[ROADMAP.md](ROADMAP.md)** for positioning, backlog, and non-goals.
+- 发现本机不同 Codex 配置环境，列出普通、归档、CLI 与子任务记录。
+- 用 `账号::会话UUID` 选择目标，支持关键词搜索和账号筛选。
+- 连接持有会话的现有桌面后端，向正在执行的任务追加指令、停止任务、继续原会话。
+- 为带来源 Bot ID 的请求记录具体 turn，完成、失败或停止后自动回报给原 Bot。
+- 持久保存通知队列，避免重复回报；发送结果不确定时保留 `uncertain` 状态，不自动重发。
+- 核对当前账号的完整 Bot 名册后，自动清理已删除 Bot 的待发通知。隐藏、离线、名册不完整或切换账号不会被当作删除。
+- 清理通知只取消回报订阅，不删除 Codex 会话，也不停止其任务。
+- 提供持久 systemd 用户服务。安装仅启用 Wingman 服务，不添加 Codex/Grok Bot 桌面自启。
 
----
+```text
+Grok Bot 本地执行
+      │
+      ▼
+wingman-codex CLI → 本机鉴权 MCP → 账号路由 → Codex 桌面会话拥有者
+                                    │
+                         具体 turn 完成 → 持久通知队列 → 原 Bot
+```
 
-## Why Wingman?
+## 环境
 
-Cloud assistants are great copilots — until they need to *touch* the session you're already in. Wingman sits on your machine, pairs with a one-command CLI, and exposes a small MCP surface so a remote host can list threads, read transcripts, send messages, and interrupt turns — without hijacking your TTY or pretending to be the agent UI.
+- Linux、systemd 用户会话、Node.js **24 或更新版本**、npm。
+- 已安装并登录的 Codex 桌面。桌面插件、内部 IPC、SQLite 名册字段与当前已测试版本匹配。
+- Grok Bot 具备访问这台电脑的本地执行通道；执行地点必须是用户电脑，而非云端沙箱。
+- 回报使用本地 Grok Bot bridge。已安装对应 Noctalia bridge 的电脑可沿用；仓库也附带可单独运行的 companion。
 
-Think of it as a radio link between the bot in the cloud and the agent on your desk. You're still flying; Wingman just rides shotgun.
+桌面 IPC 和 Grok 的 React 客户端接口均非稳定公共 API，应用更新后可能需要适配。本扩展没有复刻官方手机客户端的全部设备配对、审批与插件功能。
 
-## Quickstart
-
-### Option 1: npx (recommended)
+## 安装
 
 ```bash
-# Run directly without install — try it now!
-npx wingman-mcp
-
-# Or install globally for repeated use
-npm install -g wingman-mcp
-wingman-pair
+git clone https://github.com/pyrider3/wingman-codex-control.git
+cd wingman-codex-control
+npm ci --ignore-scripts
+npm run build
+node scripts/install.mjs --dry-run
+node scripts/install.mjs
 ```
 
-Set `CODEX_MOCK=1` or `CLAUDE_MOCK=1` for mock mode (no real agent required).
+安装目录为 `~/.local/share/wingman-control/app`，状态目录为 `~/.local/state/wingman-control`。安装时生成本机随机密钥，仓库不包含任何密钥或会话数据。已有配置和通知队列会保留。
 
-### Option 2: Clone (for contributors)
+若 shell 找不到命令，请将 `~/.local/bin` 加入 PATH，或使用 `~/.local/bin/wingman-codex`。
 
 ```bash
-git clone https://github.com/juangurdian/wingman.git
-cd wingman
-npm install
-npm run pair
+systemctl --user status wingman.service
+systemctl --user restart wingman.service
+systemctl --user disable --now wingman.service
 ```
 
-### After pairing
+默认随用户管理器启动；若希望尚未登录桌面时服务也运行，可按需执行 `loginctl enable-linger "$USER"`。**手动打开 Codex 和 Grok Bot** 后，服务会自动发现相应实例。离线配置可列出和读取历史；任务控制需要对应 Codex 桌面运行。
 
-1. **Pair** — `wingman-pair` generates a bearer token, writes `~/.wingman/config.json`, and starts MCP on `127.0.0.1:3847/mcp`.
-2. **Tunnel** — remote hosts cannot reach localhost. Pick a tunnel option (ranked by durability):
+### Grok Bot companion
 
-   ```bash
-   # Option 1: Tailscale Serve (stable, loopback to your network)
-   tailscale serve --bg 3847
-
-   # Option 2: Tailscale Funnel (stable, public URL)
-   tailscale funnel 3847
-
-   # Option 3: Cloudflare named tunnel (stable, custom domain)
-   # Run 'wingman-tunnel' for one-time setup instructions
-   cloudflared tunnel run wingman
-
-   # Option 4: Cloudflare quick tunnel (ephemeral, for demos)
-   cloudflared tunnel --url http://127.0.0.1:3847
-   ```
-
-   For detailed setup help, run `wingman-tunnel` (or `npm run tunnel`).
-
-3. **Add MCP server** (Grok Bot / Cursor `AddMcpServer`):
-
-   | Field | Value |
-   |-------|--------|
-   | **name** | `wingman` |
-   | **url** | `https://YOUR-TUNNEL-HOST/mcp` |
-   | **Authorization** | `Bearer <token printed by pair>` |
-
-Then ask the host to call `list_sessions` → `read_transcript` / `send_message` / `interrupt`.
-
-### Host-specific guides
-
-Different MCP hosts have different configuration methods. See the detailed guides:
-
-| Host | Support | Guide |
-|------|---------|-------|
-| **Grok Bot** | ✅ Full | [docs/hosts/remote-hosts.md](docs/hosts/remote-hosts.md) |
-| **Cursor IDE** | ✅ Full | [docs/hosts/cursor-ide.md](docs/hosts/cursor-ide.md) |
-| **Muse Code** | ✅ Full | [docs/hosts/muse-code.md](docs/hosts/muse-code.md) |
-| **Claude Desktop** | ⚠️ Limited | [docs/hosts/claude-desktop.md](docs/hosts/claude-desktop.md) |
-| **Other clients** | Varies | [docs/hosts/generic-mcp-client.md](docs/hosts/generic-mcp-client.md) |
-
-> **Note**: Wingman is a remote HTTP MCP server. Hosts that support HTTP + bearer auth work natively. Stdio-only hosts (like Claude Desktop) require a bridge — see the Claude Desktop guide for workarounds.
-
-### Real provider modes
-
-**Codex** — Requires `codex` on `PATH`. Wingman speaks **Codex app-server** JSON-RPC (`codex app-server` over stdio).
+已存在 `~/.local/state/noctalia-grok-bridge/bridge.sock` 时，无需另开 bridge。否则手动运行：
 
 ```bash
-npm run pair   # unset CODEX_MOCK
+wingman-grok-bridge
 ```
 
-**Claude Code** — Uses the `@anthropic-ai/claude-agent-sdk`. Sessions are created and resumed through the SDK.
+它以调试管道启动 Grok Bot，提供只允许当前用户访问的本地 socket。Grok Bot 应通过该 bridge 启动；如果已通过其他方式打开，先自行退出该实例，再运行 companion。安装器不会自动启动或重启它。
+
+可用 `GROK_BOT_BIN` 指定 Grok Bot 可执行文件。独立 companion 的代码与来源说明见 [integrations](integrations)。
+
+## 使用
 
 ```bash
-npm run pair   # unset CLAUDE_MOCK
+wingman-codex accounts
+wingman-codex list --limit 20
+wingman-codex list --account codex-account-2 --search '关键词'
+wingman-codex list --archived true
+wingman-codex select '账号::会话UUID'
+wingman-codex selected
+wingman-codex status
+wingman-codex read --limit 20
+wingman-codex send '请处理这个问题'
+wingman-codex stop
+wingman-codex resume '请继续'
 ```
 
-Docs: [Codex App Server](https://learn.chatgpt.com/docs/app-server) · [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/typescript)
+命令也可直接带完整目标 ID：`wingman-codex send '账号::会话UUID' '消息'`。同时管理多个会话时建议每条命令都带 ID，避免共享的已选会话被另一条指令改变。裸 UUID 仅在全部账号中唯一时被接受。
 
-## Can / Can't
+`list` 不默认截断；`--limit` 会同时返回 total/matched/returned，不能把显示数量当作全机总数。`notLoaded` 表示未被桌面加载，不等于正在执行。任意自定义位置、尚未运行的配置不一定能被发现；启动对应桌面后可自动发现。
 
-**Can**
+### 完成回报给原 Bot
 
-- Pair in **mock mode** with no agent install (`CODEX_MOCK=1` or `CLAUDE_MOCK=1`)
-- Bridge Grok Bot ↔ local Codex threads via app-server once tunneled
-- Bridge Grok Bot ↔ local Claude Code sessions via Agent SDK once tunneled
-- **Discover existing Claude sessions** via SDK's `listSessions()` (sessions you created via `claude` CLI or Claude Code IDE)
-- Resume discovered sessions by ID — the SDK reads session state from `~/.claude/projects/`
-- Send messages to sessions asynchronously (returns `accepted` quickly; turn runs in background)
-- Check session status (idle vs running) via `get_session` or `list_sessions`
-- Bearer-protect the MCP HTTP endpoint
-- Create / list / read / message / interrupt sessions (real or mock) for both providers
-- Keep you in the loop — the session stays visible on your machine
-
-**Can't (scope / v1 limits)**
-
-- Reach the bridge from a remote host without a **tunnel** (binds loopback only)
-- **Type into an open TTY** — SDK resume ≠ injecting keystrokes into a Claude/Codex terminal you're watching; Wingman calls SDK APIs that operate on session state files, not terminal processes
-- Hijack arbitrary Claude / Codex TTYs you already have open elsewhere — Wingman manages sessions via SDK, not by attaching to interactive shells
-- Interrupt a discovered session reliably unless Wingman started the current turn (no active query handle)
-- Auto-approve sandbox prompts (approvals still belong to the local agent client)
-- Use legacy `codex mcp-server` (removed / not used here)
-
-## Architecture
-
-```mermaid
-flowchart LR
-  subgraph cloud [Cloud]
-    Grok[Grok Bot]
-    Cursor[Cursor IDE]
-    Muse[Muse Code]
-  end
-  subgraph user [User machine]
-    Tunnel[cloudflared / Tailscale]
-    Bridge[Wingman MCP\n127.0.0.1:PORT]
-    Codex[Codex app-server\nJSON-RPC stdio]
-    Claude[Claude Agent SDK\ndiscovery + resume]
-  end
-  Grok -->|HTTPS + Bearer| Tunnel
-  Cursor -->|HTTPS + Bearer| Tunnel
-  Muse -->|HTTPS + Bearer| Tunnel
-  Tunnel --> Bridge
-  Bridge --> Codex
-  Bridge --> Claude
-```
-
-## MCP tools
-
-| Tool | Args | Notes |
-|------|------|--------|
-| `list_sessions` | `provider?`: `codex` \| `claude` | Lists sessions for one or both providers (includes `status`, `source`, `tags`, `hostId`, `hostName`) |
-| `get_session` | `provider`, `session_id` | Get detailed session info including status (`idle` / `running`), tags, and host identity |
-| `read_transcript` | `provider`, `session_id`, `limit?` | Recent messages (newest at end) |
-| `send_message` | `provider`, `session_id`, `text` | Codex: `turn/start`; Claude: returns `accepted` quickly, turn runs async |
-| `interrupt` | `provider`, `session_id` | Codex: `turn/interrupt`; Claude: works when Wingman owns the active turn |
-| `create_session` | `provider`, `cwd?`, `prompt?`, `name?`, `tags?`, `model?` | Codex: `thread/start` with optional model override; Claude: new session with optional name/tags (async). Model defaults to Codex config/defaults when not specified. |
-| `wait_turn` | `provider`, `session_id`, `timeout_ms?`, `poll_interval_ms?` | Wait for turn to complete/fail/timeout; returns status + message snippet |
-| `steer` | `provider`, `session_id`, `text` | Add guidance to in-flight turn (Codex only; Claude returns unsupported) |
-| `list_approvals` | `provider`, `session_id` | List pending approvals (Codex); Claude returns empty array |
-| `resolve_approval` | `provider`, `session_id`, `approval_id`, `decision` | Resolve approval (Codex); Claude returns unsupported error |
-| `set_session_meta` | `provider`, `session_id`, `name?`, `tags?` | Set session name/tags for easier discovery (Wingman-owned sessions) |
-| `export_transcript` | `provider`, `session_id`, `format`, `limit?` | Export transcript as `markdown` \| `json`; returns content + writes to `~/.wingman/exports/` |
-
-### create_session behavior
-
-For **Claude sessions**, `create_session` returns immediately:
-- **Without prompt**: Returns `{ sessionId, status: "created" }` — session is registered but no turn is running
-- **With prompt**: Returns `{ sessionId, status: "accepted", turnId }` — the initial prompt turn runs in the background, preventing MCP HTTP timeouts
-
-For **Codex sessions**, `create_session` calls `thread/start` and returns `{ sessionId, status: "created" | "accepted", model? }`.
-
-### Codex model override
-
-By default, Wingman does **not** override the Codex model — it uses whatever is configured in `~/.codex/config.toml` or Codex's built-in defaults. Override only when you intentionally need a different model for Wingman-created sessions:
-
-**Via environment variable**:
-```bash
-export WINGMAN_CODEX_MODEL="your-preferred-model"
-npx wingman-mcp
-```
-
-**Via create_session argument** (per-session):
-```json
-{ "provider": "codex", "model": "your-preferred-model", "prompt": "Hello" }
-```
-
-**Priority order**: `create_session.model` > `WINGMAN_CODEX_MODEL` env > user's `~/.codex/config.toml` > Codex defaults
-
-**Note**: Some models may require API access rather than a ChatGPT subscription. If session creation fails due to model access, either ensure you have the required access level, or let Codex pick its default by not setting a model override. Run `wingman-doctor` to check for models that may require API access.
-
-### send_message behavior
-
-For **Claude sessions**, `send_message` returns immediately with `{ status: "accepted", turnId }` while the SDK query runs in the background. Use `get_session` or `read_transcript` to observe progress. This prevents MCP HTTP timeouts during long model turns.
-
-For **Codex sessions**, `send_message` blocks until `turn/start` returns (typically fast), then returns `{ status: "completed" | "inProgress" }`.
-
-### interrupt behavior
-
-For **Claude sessions**, `interrupt` works reliably when Wingman owns the active turn (i.e., you called `send_message` through Wingman for the current turn). Returns `{ status: "interrupted", turnId }` on success, or `{ status: "no_active_turn" }` if the session is idle.
-
-**Limitation**: Interrupting discovered sessions or sessions where the turn was started outside Wingman (e.g., via Claude CLI directly) may not work — Wingman has no active query handle to abort. In these cases, use the Claude CLI directly: `Ctrl+C` in the terminal or `claude interrupt`.
-
-For **Codex sessions**, `interrupt` requires a known active `turnId` tracked from `turn/started` notifications.
-
-### Session tags/names
-
-Sessions can have human-friendly names and tags for easier discovery and filtering:
-
-**create_session**: Pass `name` and/or `tags` when creating a session:
-```
-create_session({ provider: "claude", cwd: "/project", name: "Auth Refactor", tags: ["refactor", "auth"] })
-```
-
-**set_session_meta**: Update name/tags on existing Wingman-owned sessions:
-```
-set_session_meta({ provider: "claude", session_id: "sess_123", name: "Updated Name", tags: ["new", "tags"] })
-```
-
-Sessions returned by `list_sessions` and `get_session` include `name` and `tags` fields. For discovered Claude sessions, the legacy `tag` field is also converted to `tags`.
-
-**Note**: In real mode, `set_session_meta` only works for Wingman-owned sessions (sessions created via Wingman's `create_session`). Codex real mode does not support custom metadata.
-
-### wait_turn (both providers)
-
-**wait_turn** provides long-poll waiting instead of busy-polling `read_transcript`. Works for both Codex and Claude sessions.
-
-For **Claude sessions**, `wait_turn` polls `activeTurns` until the turn completes, times out, or the session becomes idle. This is essential for real Claude cold starts which can take 1-3+ minutes — use `wait_turn` to avoid MCP HTTP timeouts.
-
-Example Claude workflow:
-```
-1. create_session(prompt: "Build a web scraper")  →  { status: "accepted", turnId: "turn_1" }
-2. wait_turn(timeout_ms: 180000)                  →  { status: "completed", latestMessage: "I've created..." }
-```
-
-For **Codex sessions**, `wait_turn` returns when the turn completes, fails, is interrupted, times out, or when approvals are pending.
-
-Example response:
-```json
-{ "sessionId": "thr_123", "turnId": "turn_456", "status": "completed", "latestMessage": "Done!" }
-```
-
-### steer/approvals (Codex-specific, Claude soft stubs)
-
-**steer**: Add mid-turn guidance without starting a new turn. Uses Codex's `turn/steer` API.
-- **Codex**: Useful for follow-up instructions while Codex is working.
-- **Claude**: Returns `{ accepted: false, error: "Claude does not support mid-turn steering..." }`. Use `interrupt()` + `send_message()` instead.
-
-**list_approvals** + **resolve_approval**: Programmatic approval handling for sandbox commands, file changes, or network access.
-- **Codex**: Full support via JSON-RPC requests.
-- **Claude**: `list_approvals` returns empty array; `resolve_approval` returns unsupported error. Approvals must be handled in the local Claude CLI directly.
-
-Example Codex approval flow:
-```
-1. send_message("sudo apt update")  →  { status: "inProgress" }
-2. list_approvals()                 →  { approvals: [{ id: "appr_1", kind: "command", command: "sudo apt update" }] }
-3. resolve_approval("appr_1", "accept")  →  { resolved: true }
-4. wait_turn()                      →  { status: "completed" }
-```
-
-**Note**: In mock mode (`CODEX_MOCK=1`), commands containing `sudo` or `rm -rf` trigger simulated approval requests for testing.
-
-## Environment variables
-
-### General
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `WINGMAN_TOKEN` | (generated) | Bearer token for MCP auth |
-| `WINGMAN_PORT` | `3847` | MCP server port |
-| `WINGMAN_HOST` | `127.0.0.1` | MCP server bind address |
-| `WINGMAN_WAIT_TURN_TIMEOUT_MS` | `60000` | Default timeout for `wait_turn` polling |
-| `WINGMAN_WAIT_TURN_POLL_MS` | `500` | Default poll interval for `wait_turn` |
-| `WINGMAN_HEALTHZ_AUTH_FREE` | `false` | Set to `1` to allow unauthenticated `/healthz` access |
-
-### Codex
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CODEX_MOCK` | unset | Set to `1` for in-memory mock mode |
-| `CODEX_BIN` | `codex` | Path to Codex CLI binary |
-| `CODEX_APP_SERVER_ARGS` | `app-server` | Args passed to Codex binary |
-| `CODEX_RPC_TIMEOUT_MS` | `60000` | JSON-RPC timeout |
-| `WINGMAN_CODEX_MODEL` | unset | Override Codex model for Wingman sessions (optional; defaults to Codex config/defaults) |
-
-### Claude
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CLAUDE_MOCK` | unset | Set to `1` for in-memory mock mode |
-| `CLAUDE_DISCOVER` | `1` | Set to `0` to disable session discovery |
-| `CLAUDE_DISCOVER_DIRS` | (all) | Colon-separated directories to search for sessions |
-| `CLAUDE_SEND_TIMEOUT_MS` | `120000` | Timeout for Claude SDK send operations |
-
-The Claude provider uses the bundled Agent SDK binary automatically. No separate `claude` CLI install is required unless you override `pathToClaudeCodeExecutable` in code.
-
-### Multi-Host
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `WINGMAN_HOST_ID` | hostname | Machine identifier for multi-host setups |
-| `WINGMAN_HOST_NAME` | hostname | Human-friendly host name for display |
-
-See [docs/hosts/multi-host.md](docs/hosts/multi-host.md) for running Wingman on multiple machines.
-
-## Session management
-
-### Wingman-managed sessions
-
-Wingman tracks sessions it creates in a local registry (`~/.wingman/claude-sessions.json` for Claude). This ensures:
-
-1. **Isolation** — Only sessions started through Wingman's `create_session` are visible to MCP clients by default
-2. **No TTY hijack** — We don't scan for or attach to Claude/Codex processes you started elsewhere
-3. **Resumable** — Sessions can be resumed by ID across Wingman restarts
-
-### Claude session discovery
-
-Wingman can also **discover existing Claude Code sessions** via the Agent SDK's `listSessions()`. This allows `list_sessions` to find sessions the user created via `claude` CLI or Claude Code IDE — not only sessions created through Wingman.
-
-**How discovery works:**
-1. `list_sessions` merges Wingman's registry with sessions discovered via SDK
-2. If the same session ID exists in both, the Wingman registry entry takes precedence
-3. `read_transcript`, `send_message`, and `interrupt` work for discovered sessions by resuming via `query({ options: { resume: sessionId } })`
-4. When you interact with a discovered session, it's auto-registered in Wingman's registry
-
-**What discovery is NOT:** This is not TTY hijacking. Wingman does not attach to terminal processes, scrape windows, or take over interactive sessions. Discovery reads session files on disk via official SDK APIs.
-
-Set `CLAUDE_DISCOVER=0` to disable discovery and only show Wingman-created sessions.
-
-### SessionSummary fields
-
-Sessions returned by `list_sessions` include:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `source` | `'wingman' \| 'discovered'` | Origin of the session |
-| `name` | `string?` | Human-friendly session name |
-| `tags` | `string[]?` | User-set tags for categorization/filtering |
-| `gitBranch` | `string?` | Git branch at end of session (discovered) |
-| `tag` | `string?` | Legacy single tag (discovered sessions only) |
-
-### Claude session storage
-
-Claude sessions are stored by the Agent SDK in `~/.claude/projects/<project-key>/<session-id>.jsonl`. Wingman's registry maps session IDs to their working directories so `listSessions()` and `readTranscript()` can locate them.
-
-## Scripts & CLI
-
-When installed globally (`npm i -g wingman-mcp`) or via npx:
-
-| Command | Purpose |
-|---------|---------|
-| `wingman-pair` / `wingman-mcp` | Generate token, save config, start MCP, print pair instructions |
-| `wingman-doctor` | Check environment: Node version, config, port, Claude SDK / Codex binary |
-| `wingman-tunnel` | Detect tunnel tools, print ranked setup commands, persist tunnel state |
-
-For local development:
-
-| Script | Purpose |
-|--------|---------|
-| `npm run pair` | Same as `wingman-pair` (uses tsx) |
-| `npm run doctor` | Same as `wingman-doctor` |
-| `npm run tunnel` | Same as `wingman-tunnel` |
-| `npm run dev` | Start MCP only (needs existing config/token) |
-| `npm run build` | Compile TypeScript → `dist/` |
-| `npm test` | Vitest unit tests (mocked providers) |
-
-## Config
-
-`~/.wingman/config.json` (new installs). If you still have a legacy `~/.session-bridge/config.json`, Wingman will read it as a fallback.
-
-```json
-{
-  "token": "...",
-  "host": "127.0.0.1",
-  "port": 3847,
-  "mcpPath": "/mcp",
-  "createdAt": "...",
-  "mock": true
-}
-```
-
-## Health Endpoint
-
-Wingman exposes a `/healthz` endpoint for monitoring and tunnel health checks.
-
-**Default behavior**: Requires bearer authentication (same token as `/mcp`).
-
-**Auth-free mode**: Set `WINGMAN_HEALTHZ_AUTH_FREE=1` to allow unauthenticated access to `/healthz`. This is useful for:
-- Cloudflare Tunnel health checks
-- Load balancer probes
-- Uptime monitors that can't send auth headers
+发起请求时传来源 Bot ID 或唯一名称：
 
 ```bash
-# Enable auth-free healthz (document the security tradeoff)
-WINGMAN_HEALTHZ_AUTH_FREE=1 npm run pair
+wingman-codex bots
+wingman-codex send '账号::会话UUID' --bot 'Bot ID 或唯一名称' '请处理……'
+wingman-codex resume '账号::会话UUID' --bot 'Bot ID 或唯一名称' '请继续……'
+wingman-codex steer '账号::会话UUID' --bot 'Bot ID 或唯一名称' '补充要求……'
+wingman-codex jobs
 ```
 
-**Security tradeoff**: An auth-free `/healthz` reveals that Wingman is running but exposes no secrets, session data, or MCP functionality. The `/mcp` endpoint always requires bearer auth.
+直接调用 MCP 时，`send_message` / `steer` 对应参数为 `origin_bot_id`。未标记来源的请求不自动通知，服务不会猜测收件 Bot。可以把以下约定告诉需要使用它的 Bot：
 
-Example response:
-```json
-{ "ok": true, "service": "wingman" }
-```
+> 通过用户电脑的 wingman-codex 操作现有 Codex 会话。先列出并确认目标，发起请求时用 --bot 携带你自己的 Bot ID。收到完成回报后只向用户转述，未经新指令不要继续发起任务。发送结果不明时先查历史，不要自动重复发送。
 
-## Doctor / Health Check
+已删除 Bot 的通知状态为 `recipient_deleted`，待发内容和摘要会清空；已送达记录保留。不把新建的同名 Bot 当作旧 Bot。旧记录缺少账号信息时，只在能确认原 Bot 存在的完整名册中补齐，不猜测删除。
 
-Run `npm run doctor` (or `wingman-pair --doctor`) to verify your environment:
+**目前没有按 Bot 暂停通知的开关。** 口头说“不接收了”不会自动改变队列设置。
+
+## 配置
+
+可通过环境变量覆盖：
+
+| 变量 | 用途 |
+| --- | --- |
+| `WINGMAN_STATE_DIR` | 本机状态目录 |
+| `WINGMAN_CONFIG_PATH` | 密钥配置文件路径 |
+| `CODEX_BIN` | 只读离线历史读取所用的 Codex 可执行文件 |
+| `GROK_BOT_BIN` | companion 启动的 Grok Bot 可执行文件 |
+
+本扩展 MCP 监听 `127.0.0.1:3847`，要求 Bearer 鉴权，不配置公网隧道。配置、数据库、日志、收据和会话清单都不应提交进 Git。
+
+## 开发与验证
 
 ```bash
-npm run doctor
+npm run build
+npm test
+npm run test:desktop
 ```
 
-Checks:
-- Node.js version (20+ required)
-- Config file (`~/.wingman/config.json`)
-- Port availability (3847 by default)
-- Claude Agent SDK availability (unless `CLAUDE_MOCK=1`)
-- Codex binary on PATH (unless `CODEX_MOCK=1`)
+桌面扩展测试使用临时数据库和模拟名册，不删除真实 Bot，不触碰真实 Codex 任务。覆盖跨账号 UUID 歧义、具体 turn 匹配、通知去重与恢复、发送结果不确定、删除 Bot 清理、隐藏 Bot 和账号切换。
 
-The doctor prints clear next steps if any check fails.
+本机实测曾验证：跨账号读取，向现有活动任务追加指令，精确停止并继续原会话，任务完成后回报原 Bot。测试收据与任何私人会话内容均不包含在仓库中。
 
-## Agent skill
+## 来源
 
-See [`skills/pair-coding-sessions/SKILL.md`](skills/pair-coding-sessions/SKILL.md) for setup / pair / operate steps aligned with this CLI.
-
-## Security
-
-See [SECURITY.md](SECURITY.md) for security policy, bearer token handling, and best practices.
-
-## Community
-
-Open-source. MVP — Codex and Claude providers work (mock + real); APIs may shift before 1.0.
-
-Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Ideas for tunnel helpers, provider improvements, and other MCP-host guides are especially useful.
-
-If Wingman helped you pair a session, star the repo or open an issue with what you tried. Good wingmen share the checklist.
-
-## Develop
-
-```bash
-git clone https://github.com/juangurdian/wingman.git
-cd wingman
-npm install
-npm run doctor              # check environment
-npm test                    # run tests
-npm run build               # compile TypeScript
-CODEX_MOCK=1 npm run pair   # or CLAUDE_MOCK=1
-```
-
-Node 20+. Success criteria: install, test, build succeed; mock pair prints URL + token.
-
-## License
-
-[MIT](LICENSE) © Juan Gurdian and contributors
+- Wingman 原项目：<https://github.com/juangurdian/wingman>，MIT，见 [LICENSE](LICENSE)。
+- Grok companion 与本机 Noctalia 集成代码的许可证见 [integrations/LICENSE](integrations/LICENSE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

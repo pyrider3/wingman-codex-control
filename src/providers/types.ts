@@ -175,14 +175,14 @@ export interface SessionProvider {
   listSessions(): Promise<SessionSummary[]>;
   getSession?(sessionId: string): Promise<SessionDetail | null>;
   readTranscript(sessionId: string, limit?: number): Promise<Transcript>;
-  sendMessage(sessionId: string, text: string): Promise<SendMessageResult>;
+  sendMessage(sessionId: string, text: string, opts?: { originBotId?: string }): Promise<SendMessageResult>;
   interrupt(sessionId: string): Promise<InterruptResult>;
   createSession?(opts?: CreateSessionOptions): Promise<CreateSessionResult>;
   
   /** Wait for an active turn to complete (Codex-specific) */
   waitTurn?(sessionId: string, opts?: WaitTurnOptions): Promise<WaitTurnResult>;
   /** Add guidance to an in-flight turn without starting a new turn (Codex-specific) */
-  steer?(sessionId: string, text: string): Promise<SteerResult>;
+  steer?(sessionId: string, text: string, opts?: { originBotId?: string }): Promise<SteerResult>;
   /** List pending approvals for a session (Codex-specific) */
   listApprovals?(sessionId: string): Promise<ListApprovalsResult>;
   /** Resolve a pending approval (Codex-specific) */
